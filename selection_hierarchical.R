@@ -5,27 +5,28 @@ source("functions.R")
 library(MASS)
 library(randomForest)
 
+#parameters for data generation
 p_G <- 10
 p_X <- 20
 
 sd_X <- 3
-sd_Y <- 1
+sd_Y <- 10
 
-K_train <- 50
+K_train <- 100
 K <- 200
-K_test <- 20
+K_test <- 20 
 
 set.seed(1234)
 A <- matrix(rnorm(p_X*p_G),nrow=p_X)
 beta_1 <- runif(p_X)
 beta_2 <- runif(p_G)
 
+#generating data
 set.seed(1)
 G_train <- matrix(runif(K_train*p_G,-5,5),nrow=K_train)
-
 X_train <- list()
 Y_train <- list()
-lambda <- 5
+lambda <- 5 
 
 X_train_mat <- matrix(nrow=0,ncol=p_X)
 G_train_mat <- matrix(nrow=0,ncol=p_G)
@@ -38,14 +39,14 @@ for(i in 1:K_train)
   Y_train[[i]] <- sapply(1:N_k_train[i], function(j) rnorm(1,mean=sum(beta_1*X_train[[i]][j,])+log(abs(sum(beta_2*G_train[i,]))), sd=sd_Y*sqrt(sum(X_train[[i]][j,]^2))/p_X))
 }
 
-
+#fit random forest regression
 rf <- randomForest(cbind(G_train_mat,X_train_mat),unlist(Y_train))
 
-plot(X_train_mat[,1],unlist(Y_train))
 
 c <- 20
 alpha_set <- seq(0.05,0.25,by=0.025)
 
+#repeat generating calibration set & running procedure
 tn <- 500
 FDP_vec <- matrix(0,nrow=tn,ncol=length(alpha_set))
 power_vec <- matrix(0,nrow=tn,ncol=length(alpha_set))
@@ -60,24 +61,15 @@ pb <- txtProgressBar(min = 0, max = tn, style = 3)
 
 for(t in 1:tn)
 {
-  G_0 <- matrix(runif(K*p_G,-5,5),nrow=K)
   G <- matrix(runif(K*p_G,-5,5),nrow=K)
   G_test <- matrix(runif(K_test*p_G,-5,5),nrow=K_test)
-  N_k_0 <- f_N_pois(K,lambda)
   N_k <- f_N_pois(K,lambda)
   N_k_test <- f_N_pois(K_test,lambda)
-  X_0 <- list()
-  Y_0 <- list()
   X <- list()
   Y <- list()
   X_test <- list()
   Y_test <- list()
   
-  for(i in 1:K)
-  {
-    X_0[[i]] <- mvrnorm(N_k_0[i], mu=A%*%G_0[i,], Sigma=sd_X*diag(p_X))
-    Y_0[[i]] <- sapply(1:N_k_0[i], function(j) rnorm(1,mean=sum(beta_1*X_0[[i]][j,])+log(abs(sum(beta_2*G_0[i,]))), sd=sd_Y*sqrt(sum(X_0[[i]][j,]^2))/p_X))
-  }
   for(i in 1:K)
   {
     X[[i]] <- mvrnorm(N_k[i], mu=A%*%G[i,], Sigma=sd_X*diag(p_X))
@@ -90,28 +82,38 @@ for(t in 1:tn)
   }
   
   
-  score_cal_0_hat <- lapply(1:K,function(i) c-predict(rf,cbind(rep(1,N_k_0[i])%*%t(G_0[i,]),X_0[[i]])))
   score_cal_hat <- lapply(1:K,function(i) c-predict(rf,cbind(rep(1,N_k[i])%*%t(G[i,]),X[[i]])))
   score_cal <- lapply(1:K,function(i) Y[[i]]-predict(rf,cbind(rep(1,N_k[i])%*%t(G[i,]),X[[i]])))
   score_test_hat <- lapply(1:K_test,function(i) c-predict(rf,cbind(rep(1,N_k_test[i])%*%t(G_test[i,]),X_test[[i]])))
   
-  FDP_hat <- function(t,j)
+  FDP_hat_1 <- function(t,j)
   {
-    numer <- sum(sapply(1:K, function(k) sum((score_cal_0_hat[[k]] < t)*(Y_0[[k]] <= c))))+N_k_test[j]
+    numer <- sum(sapply(1:K, function(k) mean((score_cal_hat[[k]] < t)*(Y[[k]] <= c))))+1
     denom <- max(1,sum(sapply(score_test_hat,function(v) sum(v < t))[-j]))
-    FDP_t <- (numer/denom)*(sum(N_k_test)/(sum(N_k_0)+N_k_test[j]))
+    FDP_t <- (numer/denom)*(sum(N_k_test[-j])/(K+1))
     return(FDP_t)
   }
-  FDP_hat <- Vectorize(FDP_hat)
+  FDP_hat_1 <- Vectorize(FDP_hat_1)
+  FDP_hat_2 <- function(t,j)
+  {
+    numer <- sum(sapply(1:K, function(k) mean((score_cal_hat[[k]] < t)*(Y[[k]] <= c))))
+    denom <- max(1,sum(sapply(score_test_hat,function(v) sum(v < t))[-j]))
+    FDP_t <- (numer/denom)*(sum(N_k_test[-j])/(K+1))
+    return(FDP_t)
+  }
+  FDP_hat_2 <- Vectorize(FDP_hat_2)
   
-  T_rej <- rep(0,K_test)
+  T_rej_1 <- rep(0,K_test)
+  T_rej_2 <- rep(0,K_test)
   
   t_set <- seq(-20,15,0.1)
-  FDP_t_set <- matrix(0,nrow=K_test,ncol=length(t_set))
+  FDP_t_set_1 <- matrix(0,nrow=K_test,ncol=length(t_set))
+  FDP_t_set_2 <- matrix(0,nrow=K_test,ncol=length(t_set))
   
   for(j in 1:K_test)
   {
-    FDP_t_set[j,] <- FDP_hat(t_set,j)
+    FDP_t_set_1[j,] <- FDP_hat_1(t_set,j)
+    FDP_t_set_2[j,] <- FDP_hat_2(t_set,j)
   }
 
   
@@ -119,23 +121,29 @@ for(t in 1:tn)
   for(alpha in alpha_set)
   {
     alpha <- alpha_set[l]
-    alpha_tilde <- 0.9*alpha
-    T_rej <- rep(0,K_test)
+    alpha_tilde <- 0.8*alpha
+    T_rej_1 <- rep(0,K_test)
     for(j in 1:K_test)
     {
-      if(min(FDP_t_set[j,]) <= alpha_tilde )
+      if(min(FDP_t_set_1[j,]) <= alpha_tilde )
       {
-        T_rej[j] <- max(t_set[which(FDP_t_set[j,] <= alpha_tilde )])
+        T_rej_1[j] <- max(t_set[which(FDP_t_set_1[j,] <= alpha_tilde )])
       } else{
-        T_rej[j] <- -Inf
+        T_rej_1[j] <- -Inf
+      }
+      if(min(FDP_t_set_2[j,]) <= alpha_tilde )
+      {
+        T_rej_2[j] <- max(t_set[which(FDP_t_set_2[j,] <= alpha_tilde )])
+      } else{
+        T_rej_2[j] <- -Inf
       } 
     }
     
     
     U <- runif(1)
         
-    e_list <- lapply(1:K_test, function(j) (score_test_hat[[j]] < T_rej[j])*(K+1)/(sum(sapply(1:K, function(k) mean((score_cal_hat[[k]] < T_rej[j])*(Y[[k]] <= c))))+1))
-    e_list_U <- lapply(1:K_test, function(j) (score_test_hat[[j]] < T_rej[j])*(K+1)/(U*(sum(sapply(1:K, function(k) mean((score_cal_hat[[k]] < T_rej[j])*(Y[[k]] <= c))))+1)))
+    e_list <- lapply(1:K_test, function(j) (score_test_hat[[j]] < T_rej_1[j])*(K+1)/(sum(sapply(1:K, function(k) mean((score_cal_hat[[k]] < T_rej_2[j])*(Y[[k]] <= c))))+1))
+    e_list_U <- lapply(1:K_test, function(j) (score_test_hat[[j]] < T_rej_1[j])*(K+1)/(U*(sum(sapply(1:K, function(k) mean((score_cal_hat[[k]] < T_rej_2[j])*(Y[[k]] <= c))))+1)))
     p_list_0 <- lapply(1:K_test, function(j) sapply(score_test_hat[[j]], function(x) (sum(sapply(1:K, function(k) mean((x > score_cal[[k]]))))+1)/(K+1)))
     p_list <- lapply(1:K_test, function(j) sapply(score_test_hat[[j]], function(x) (sum(sapply(1:K, function(k) mean((x > score_cal_hat[[k]])*(Y[[k]] <= c)))))/(K+1)))
     
@@ -179,7 +187,7 @@ for(t in 1:tn)
   setTxtProgressBar(pb, t)
 }
 
-
+#plots
 col1 <- rgb(0.098, 0.463, 0.824, alpha=0.2)
 col2 <- rgb(0.827, 0.184, 0.184, alpha=0.2)
 
@@ -224,4 +232,4 @@ legend2="U-eBH"
 legend3="p-BH"
 
 legend(0.28,0.7, legend = c(legend1, legend2, legend3), col = c(col1,col1,col2),lty=c(1,2,2),lwd=2,box.lty=0,cex=1.7,bty="n",)
-#1400x580
+

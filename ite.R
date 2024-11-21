@@ -5,28 +5,23 @@ source("functions.R")
 library(MASS)
 library(randomForest)
 
-#parameters for data generation
 p_G <- 10
 p_X <- 20
 
-sd_X <- 3
-sd_Y <- 1
-
-K_train <- 50
-K <- 50
+K_train <- 100
+K <- 200
 K_test <- 20 
 
+#data geneeration
 set.seed(1234)
 A <- matrix(rnorm(p_X*p_G),nrow=p_X)
-beta_1 <- runif(p_X)
-beta_2 <- runif(p_G)
+beta_1 <- runif(p_X,0,1)/p_X
 
-#generating data
-set.seed(1)
 G_train <- matrix(runif(K_train*p_G,-5,5),nrow=K_train)
 X_train <- list()
-Y_train <- list()
-lambda <- 5
+Y_train_1 <- list()
+Y_train_0 <- list()
+lambda <- 10 
 
 X_train_mat <- matrix(nrow=0,ncol=p_X)
 G_train_mat <- matrix(nrow=0,ncol=p_G)
@@ -34,18 +29,19 @@ N_k_train <-  f_N_pois(K_train,lambda)
 for(i in 1:K_train)
 {
   G_train_mat <- rbind(G_train_mat,rep(1,N_k_train[i])%*%t(G_train[i,]))
-  X_train[[i]] <- mvrnorm(N_k_train[i], mu=A%*%G_train[i,], Sigma=sd_X*diag(p_X))
+  X_train[[i]] <- matrix(runif(N_k_train[i]*p_X),nrow=N_k_train[i])
   X_train_mat <- rbind(X_train_mat,X_train[[i]])
-  Y_train[[i]] <- sapply(1:N_k_train[i], function(j) rnorm(1,mean=sum(beta_1*X_train[[i]][j,])+log(abs(sum(beta_2*G_train[i,]))), sd=sd_Y*sqrt(sum(X_train[[i]][j,]^2))/p_X))
+  Y_train_1[[i]] <- sapply(1:N_k_train[i], function(j) rbeta(1,1+sum(beta_1*X_train[[i]][j,]),1-sum(beta_1*X_train[[i]][j,])))
+  Y_train_0[[i]] <- sapply(1:N_k_train[i], function(j) rbeta(1,1-sum(beta_1*X_train[[i]][j,]),1+sum(beta_1*X_train[[i]][j,])))
+  
 }
 
 #fit random forest regression
-rf <- randomForest(cbind(G_train_mat,X_train_mat),unlist(Y_train))
+rf <- randomForest(X_train_mat,unlist(Y_train_1))
 
-c <- 20
 alpha_set <- seq(0.05,0.25,by=0.025)
 
-#repeat generating calibration set & running procedure
+#run procedure
 tn <- 500
 FDP_vec <- matrix(0,nrow=tn,ncol=length(alpha_set))
 power_vec <- matrix(0,nrow=tn,ncol=length(alpha_set))
@@ -64,35 +60,35 @@ for(t in 1:tn)
   N_k <- f_N_pois(K,lambda)
   N_k_test <- f_N_pois(K_test,lambda)
   X <- list()
-  Y <- list()
+  Y_1 <- list()
+  Y_0 <- list()
   X_test <- list()
-  Y_test <- list()
+  Y_test_1 <- list()
+  Y_test_0 <- list()
   
   for(i in 1:K)
   {
-    X[[i]] <- mvrnorm(N_k[i], mu=A%*%G[i,], Sigma=sd_X*diag(p_X))
-    Y[[i]] <- sapply(1:N_k[i], function(j) rnorm(1,mean=sum(beta_1*X[[i]][j,])+log(abs(sum(beta_2*G[i,]))), sd=sd_Y*sqrt(sum(X[[i]][j,]^2))/p_X))
+    X[[i]] <- matrix(runif(N_k[i]*p_X),nrow=N_k[i])
+    Y_1[[i]] <- sapply(1:N_k[i], function(j) rbeta(1,1+sum(beta_1*X[[i]][j,]),1-sum(beta_1*X[[i]][j,])))
   }
   for(i in 1:K_test)
   {
-    X_test[[i]] <- mvrnorm(N_k_test[i], mu=A%*%G_test[i,], Sigma=sd_X*diag(p_X))
-    Y_test[[i]] <- sapply(1:N_k_test[i], function(j) rnorm(1,mean=sum(beta_1*X_test[[i]][j,])+log(abs(sum(beta_2*G_test[i,]))), sd=sd_Y*sqrt(sum(X_test[[i]][j,]^2))/p_X))
+    X_test[[i]] <- matrix(runif(N_k_test[i]*p_X),nrow=N_k_test[i])
+    Y_test_1[[i]] <- sapply(1:N_k_test[i], function(j) rbeta(1,1+sum(beta_1*X_test[[i]][j,]),1-sum(beta_1*X_test[[i]][j,])))
+    Y_test_0[[i]] <- sapply(1:N_k_test[i], function(j) rbeta(1,1-sum(beta_1*X_test[[i]][j,]),1+sum(beta_1*X_test[[i]][j,])))
   }
-
   
-  score_cal <- lapply(1:K,function(i) Y[[i]]-predict(rf,cbind(rep(1,N_k[i])%*%t(G[i,]),X[[i]])))
-  score_cal_hat <- lapply(1:K,function(i) c-predict(rf,cbind(rep(1,N_k[i])%*%t(G[i,]),X[[i]])))
-  score_test_hat <- lapply(1:K_test,function(i) c-predict(rf,cbind(rep(1,N_k_test[i])%*%t(G_test[i,]),X_test[[i]])))
+  score_cal_1 <- lapply(1:K,function(i) Y_1[[i]]-predict(rf,X[[i]]))
+  score_test_0 <- lapply(1:K_test,function(i) Y_test_0[[i]]-predict(rf,X_test[[i]]))
   
   ind <- sapply(1:K, function(k) sample(1:N_k[k],1))
   
-  score_cal_hat_sample <- sapply(1:K, function(k) score_cal_hat[[k]][ind[k]])
-  Y_sample <- sapply(1:K, function(k) Y[[k]][ind[k]])
-  
+  score_cal_1_sample <- sapply(1:K, function(k) score_cal_1[[k]][ind[k]])
+
   FDP_hat <- function(t,j)
   {
-    numer <- sum((score_cal_hat_sample < t)*(Y_sample <= c))+1
-    denom <- max(1,sum(sapply(score_test_hat,function(v) sum(v < t))[-j]))
+    numer <- sum((score_cal_1_sample < t))+1
+    denom <- max(1,sum(sapply(score_test_0,function(v) sum(v < t))[-j]))
     FDP_t <- (numer/denom)*(sum(N_k_test)/(K+1))
     return(FDP_t)
   }
@@ -100,8 +96,8 @@ for(t in 1:tn)
   
   T_rej <- rep(0,K_test)
   
-  t_v <- c(score_cal_hat_sample,unlist(score_test_hat))
-  t_set <- sort(t_v[which((t_v<20)*(t_v>-20)==1)])
+  t_v <- c(score_cal_1_sample,unlist(score_test_0))
+  t_set <- sort(t_v)
   FDP_t_set <- matrix(0,nrow=K_test,ncol=length(t_set))
   
   for(j in 1:K_test)
@@ -128,27 +124,28 @@ for(t in 1:tn)
     
     
     U <- runif(1)
-    e_list <- lapply(1:K_test, function(j) (score_test_hat[[j]] < T_rej[j])*(K+1)/(( sum((score_cal_hat_sample < T_rej[j])*(Y_sample <= c))+1)))
-    e_list_U <- lapply(1:K_test, function(j) (score_test_hat[[j]] < T_rej[j])*(K+1)/(U*( sum((score_cal_hat_sample < T_rej[j])*(Y_sample <= c))+1)))
-
+    e_list <- lapply(1:K_test, function(j) (score_test_0[[j]] < T_rej[j])*(K+1)/(( sum((score_cal_1_sample < T_rej[j]))+1)))
+    e_list_U <- lapply(1:K_test, function(j) (score_test_0[[j]] < T_rej[j])*(K+1)/(U*( sum((score_cal_1_sample < T_rej[j]))+1)))
+    
     e_threshold <- eBH(unlist(e_list),alpha)
     e_threshold_U <- eBH(unlist(e_list_U),alpha)
-    p_list <- lapply(score_test_hat, function(v) (colSums(sapply(v, function(x) (x>score_cal_hat_sample)*(Y_sample <= c)))+1)/(K+1))
+    
+    p_list <- lapply(score_test_0, function(v) (colSums(sapply(v, function(x) (x>score_cal_1_sample)))+1)/(K+1))
     p_threshold <- BH(unlist(p_list),alpha)
     
     R <- sum(unlist(sapply(1:K_test, function(k) e_list[[k]]>= e_threshold)))
-    V <- sum(unlist(sapply(1:K_test, function(k) (e_list[[k]]>= e_threshold)*(Y_test[[k]]<=c))))
-    tr_pos <- sum(unlist(sapply(1:K_test, function(k) (e_list[[k]]>= e_threshold)*(Y_test[[k]]>c))))
+    V <- sum(unlist(sapply(1:K_test, function(k) (e_list[[k]]>= e_threshold)*(Y_test_1[[k]]<=Y_test_0[[k]]))))
+    tr_pos <- sum(unlist(sapply(1:K_test, function(k) (e_list[[k]]>= e_threshold)*(Y_test_1[[k]]>Y_test_0[[k]]))))
     
     R_U <- sum(unlist(sapply(1:K_test, function(k) e_list_U[[k]]>= e_threshold_U)))
-    V_U <- sum(unlist(sapply(1:K_test, function(k) (e_list_U[[k]]>= e_threshold_U)*(Y_test[[k]]<=c))))
-    tr_pos_U <- sum(unlist(sapply(1:K_test, function(k) (e_list_U[[k]]>= e_threshold_U)*(Y_test[[k]]>c))))
+    V_U <- sum(unlist(sapply(1:K_test, function(k) (e_list_U[[k]]>= e_threshold_U)*(Y_test_1[[k]]<=Y_test_0[[k]]))))
+    tr_pos_U <- sum(unlist(sapply(1:K_test, function(k) (e_list_U[[k]]>= e_threshold_U)*(Y_test_1[[k]]>Y_test_0[[k]]))))
     
-    pos <- sum(unlist(sapply(1:K_test, function(k) (Y_test[[k]]>c))))
+    pos <- sum(unlist(sapply(1:K_test, function(k) (Y_test_1[[k]]>Y_test_0[[k]]))))
     
     R_p <- sum(unlist(sapply(1:K_test, function(k) p_list[[k]]<= p_threshold)))
-    V_p <- sum(unlist(sapply(1:K_test, function(k) (p_list[[k]]<=p_threshold)*(Y_test[[k]]<=c))))
-    tr_pos_p <- sum(unlist(sapply(1:K_test, function(k) (p_list[[k]]<= p_threshold)*(Y_test[[k]]>c))))
+    V_p <- sum(unlist(sapply(1:K_test, function(k) (p_list[[k]]<=p_threshold)*(Y_test_1[[k]]<=Y_test_0[[k]]))))
+    tr_pos_p <- sum(unlist(sapply(1:K_test, function(k) (p_list[[k]]<= p_threshold)*(Y_test_1[[k]]>Y_test_0[[k]]))))
 
     FDP_vec[t,l] <- V/max(R,1)
     power_vec[t,l] <- tr_pos/max(pos,1)
@@ -156,19 +153,19 @@ for(t in 1:tn)
     power_vec_U[t,l] <- tr_pos_U/max(pos,1)
     FDP_p_vec[t,l] <- V_p/max(R_p,1)
     power_p_vec[t,l] <- tr_pos_p/max(pos,1)
-
+    
     
     l <- l+1
   }
-
+  
   
   setTxtProgressBar(pb, t)
 }
 
+
 #plots
 col1 <- rgb(0.098, 0.463, 0.824, alpha=0.2)
 col2 <- rgb(0.827, 0.184, 0.184, alpha=0.2)
-
 
 FDP_mean <- colMeans(FDP_vec)
 FDP_se <- apply(FDP_vec,2,sd)/sqrt(tn)
@@ -184,6 +181,9 @@ power_se_U <- apply(power_vec_U,2,sd)/sqrt(tn)
 power_p_mean <- colMeans(power_p_vec)
 power_p_se <- apply(power_p_vec,2,sd)/sqrt(tn)
 
+setwd("C:/Wharton/selection for hierarchically structured data")
+write.table(cbind(FDP_mean,FDP_se,FDP_mean_U,FDP_se_U,FDP_p_mean,FDP_p_se),"FDP_M_200_lam_10_ite")
+write.table(cbind(power_mean,power_se,power_mean_U,power_se_U,power_p_mean,power_p_se),"power_M_200_lam_10_ite")
 
 col1 <- rgb(0.098, 0.463, 0.824, 1)
 col2 <- rgb(0.827, 0.184, 0.184, 1)
@@ -206,7 +206,5 @@ legend2="U-eBH"
 legend3="p-BH"
 
 legend(0.28,0.78, legend = c(legend1, legend2, legend3), col = c(col1,col1,col2),lty=c(1,2,2),lwd=2,box.lty=0,cex=1.7,bty="n",)
-
-
 
 
